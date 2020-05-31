@@ -16,40 +16,40 @@ package rules
 
 import (
 	"go/ast"
-	"regexp"
 
-	gas "github.com/HewlettPackard/gas/core"
+	"github.com/securego/gosec/v2"
 )
 
-type WeakRand struct {
-	gas.MetaData
-	pattern     *regexp.Regexp
-	packageName string
+type weakRand struct {
+	gosec.MetaData
+	funcNames   []string
 	packagePath string
 }
 
-func (w *WeakRand) Match(n ast.Node, c *gas.Context) (*gas.Issue, error) {
-	if call := gas.MatchCall(n, w.pattern); call != nil {
-		for _, pkg := range c.Pkg.Imports() {
-			if pkg.Name() == w.packageName && pkg.Path() == w.packagePath {
-				return gas.NewIssue(c, n, w.What, w.Severity, w.Confidence), nil
-			}
+func (w *weakRand) ID() string {
+	return w.MetaData.ID
+}
+
+func (w *weakRand) Match(n ast.Node, c *gosec.Context) (*gosec.Issue, error) {
+	for _, funcName := range w.funcNames {
+		if _, matched := gosec.MatchCallByPackage(n, c, w.packagePath, funcName); matched {
+			return gosec.NewIssue(c, n, w.ID(), w.What, w.Severity, w.Confidence), nil
 		}
 	}
+
 	return nil, nil
 }
 
-func NewWeakRandCheck(conf map[string]interface{}) (r gas.Rule, n ast.Node) {
-	r = &WeakRand{
-		pattern:     regexp.MustCompile(`^rand\.Read$`),
-		packageName: "rand",
+// NewWeakRandCheck detects the use of random number generator that isn't cryptographically secure
+func NewWeakRandCheck(id string, conf gosec.Config) (gosec.Rule, []ast.Node) {
+	return &weakRand{
+		funcNames:   []string{"Read", "Int"},
 		packagePath: "math/rand",
-		MetaData: gas.MetaData{
-			Severity:   gas.High,
-			Confidence: gas.Medium,
+		MetaData: gosec.MetaData{
+			ID:         id,
+			Severity:   gosec.High,
+			Confidence: gosec.Medium,
 			What:       "Use of weak random number generator (math/rand instead of crypto/rand)",
 		},
-	}
-	n = (*ast.CallExpr)(nil)
-	return
+	}, []ast.Node{(*ast.CallExpr)(nil)}
 }

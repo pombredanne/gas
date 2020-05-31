@@ -17,52 +17,95 @@ package rules
 import (
 	"fmt"
 	"go/ast"
-	"regexp"
+	"strconv"
 
-	gas "github.com/HewlettPackard/gas/core"
+	"github.com/securego/gosec/v2"
 )
 
-type FilePermissions struct {
-	gas.MetaData
-	pattern *regexp.Regexp
-	mode    int64
+type filePermissions struct {
+	gosec.MetaData
+	mode  int64
+	pkg   string
+	calls []string
 }
 
-func (r *FilePermissions) Match(n ast.Node, c *gas.Context) (*gas.Issue, error) {
-	if node := gas.MatchCall(n, r.pattern); node != nil {
-		if val, err := gas.GetInt(node.Args[1]); err == nil && val > r.mode {
-			return gas.NewIssue(c, n, r.What, r.Severity, r.Confidence), nil
+func (r *filePermissions) ID() string {
+	return r.MetaData.ID
+}
+
+func getConfiguredMode(conf map[string]interface{}, configKey string, defaultMode int64) int64 {
+	var mode = defaultMode
+	if value, ok := conf[configKey]; ok {
+		switch value := value.(type) {
+		case int64:
+			mode = value
+		case string:
+			if m, e := strconv.ParseInt(value, 0, 64); e != nil {
+				mode = defaultMode
+			} else {
+				mode = m
+			}
+		}
+	}
+	return mode
+}
+
+func (r *filePermissions) Match(n ast.Node, c *gosec.Context) (*gosec.Issue, error) {
+	if callexpr, matched := gosec.MatchCallByPackage(n, c, r.pkg, r.calls...); matched {
+		modeArg := callexpr.Args[len(callexpr.Args)-1]
+		if mode, err := gosec.GetInt(modeArg); err == nil && mode > r.mode {
+			return gosec.NewIssue(c, n, r.ID(), r.What, r.Severity, r.Confidence), nil
 		}
 	}
 	return nil, nil
 }
 
-func NewChmodPerms(conf map[string]interface{}) (r gas.Rule, n ast.Node) {
-	mode := 0600
-	r = &FilePermissions{
-		pattern: regexp.MustCompile(`^os\.Chmod$`),
-		mode:    (int64)(mode),
-		MetaData: gas.MetaData{
-			Severity:   gas.Medium,
-			Confidence: gas.High,
-			What:       fmt.Sprintf("Expect chmod permissions to be %#o or less", mode),
+// NewWritePerms creates a rule to detect file Writes with bad permissions.
+func NewWritePerms(id string, conf gosec.Config) (gosec.Rule, []ast.Node) {
+	mode := getConfiguredMode(conf, "G306", 0600)
+	return &filePermissions{
+		mode:  mode,
+		pkg:   "io/ioutil",
+		calls: []string{"WriteFile"},
+		MetaData: gosec.MetaData{
+			ID:         id,
+			Severity:   gosec.Medium,
+			Confidence: gosec.High,
+			What:       fmt.Sprintf("Expect WriteFile permissions to be %#o or less", mode),
 		},
-	}
-	n = (*ast.CallExpr)(nil)
-	return
+	}, []ast.Node{(*ast.CallExpr)(nil)}
 }
 
-func NewMkdirPerms(conf map[string]interface{}) (r gas.Rule, n ast.Node) {
-	mode := 0700
-	r = &FilePermissions{
-		pattern: regexp.MustCompile(`^(os\.Mkdir|os\.MkdirAll)$`),
-		mode:    (int64)(mode),
-		MetaData: gas.MetaData{
-			Severity:   gas.Medium,
-			Confidence: gas.High,
+// NewFilePerms creates a rule to detect file creation with a more permissive than configured
+// permission mask.
+func NewFilePerms(id string, conf gosec.Config) (gosec.Rule, []ast.Node) {
+	mode := getConfiguredMode(conf, "G302", 0600)
+	return &filePermissions{
+		mode:  mode,
+		pkg:   "os",
+		calls: []string{"OpenFile", "Chmod"},
+		MetaData: gosec.MetaData{
+			ID:         id,
+			Severity:   gosec.Medium,
+			Confidence: gosec.High,
+			What:       fmt.Sprintf("Expect file permissions to be %#o or less", mode),
+		},
+	}, []ast.Node{(*ast.CallExpr)(nil)}
+}
+
+// NewMkdirPerms creates a rule to detect directory creation with more permissive than
+// configured permission mask.
+func NewMkdirPerms(id string, conf gosec.Config) (gosec.Rule, []ast.Node) {
+	mode := getConfiguredMode(conf, "G301", 0750)
+	return &filePermissions{
+		mode:  mode,
+		pkg:   "os",
+		calls: []string{"Mkdir", "MkdirAll"},
+		MetaData: gosec.MetaData{
+			ID:         id,
+			Severity:   gosec.Medium,
+			Confidence: gosec.High,
 			What:       fmt.Sprintf("Expect directory permissions to be %#o or less", mode),
 		},
-	}
-	n = (*ast.CallExpr)(nil)
-	return
+	}, []ast.Node{(*ast.CallExpr)(nil)}
 }

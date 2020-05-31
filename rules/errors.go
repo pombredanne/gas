@@ -17,47 +17,103 @@ package rules
 import (
 	"go/ast"
 	"go/types"
-	"reflect"
 
-	gas "github.com/HewlettPackard/gas/core"
+	"github.com/securego/gosec/v2"
 )
 
-type NoErrorCheck struct {
-	gas.MetaData
+type noErrorCheck struct {
+	gosec.MetaData
+	whitelist gosec.CallList
 }
 
-func (r *NoErrorCheck) Match(n ast.Node, c *gas.Context) (gi *gas.Issue, err error) {
-	if node, ok := n.(*ast.AssignStmt); ok {
-		sel := reflect.TypeOf(&ast.CallExpr{})
-		if call, ok := gas.SimpleSelect(node.Rhs[0], sel).(*ast.CallExpr); ok {
-			if t := c.Info.Types[call].Type; t != nil {
-				if typeVal, typeErr := t.(*types.Tuple); typeErr {
-					for i := 0; i < typeVal.Len(); i++ {
-						if typeVal.At(i).Type().String() == "error" { // TODO(tkelsey): is there a better way?
-							if id, ok := node.Lhs[i].(*ast.Ident); ok && id.Name == "_" {
-								return gas.NewIssue(c, n, r.What, r.Severity, r.Confidence), nil
-							}
-						}
+func (r *noErrorCheck) ID() string {
+	return r.MetaData.ID
+}
+
+func returnsError(callExpr *ast.CallExpr, ctx *gosec.Context) int {
+	if tv := ctx.Info.TypeOf(callExpr); tv != nil {
+		switch t := tv.(type) {
+		case *types.Tuple:
+			for pos := 0; pos < t.Len(); pos++ {
+				variable := t.At(pos)
+				if variable != nil && variable.Type().String() == "error" {
+					return pos
+				}
+			}
+		case *types.Named:
+			if t.String() == "error" {
+				return 0
+			}
+		}
+	}
+	return -1
+}
+
+func (r *noErrorCheck) Match(n ast.Node, ctx *gosec.Context) (*gosec.Issue, error) {
+	switch stmt := n.(type) {
+	case *ast.AssignStmt:
+		cfg := ctx.Config
+		if enabled, err := cfg.IsGlobalEnabled(gosec.Audit); err == nil && enabled {
+			for _, expr := range stmt.Rhs {
+				if callExpr, ok := expr.(*ast.CallExpr); ok && r.whitelist.ContainsCallExpr(expr, ctx) == nil {
+					pos := returnsError(callExpr, ctx)
+					if pos < 0 || pos >= len(stmt.Lhs) {
+						return nil, nil
 					}
-				} else if t.String() == "error" { // TODO(tkelsey): is there a better way?
-					if id, ok := node.Lhs[0].(*ast.Ident); ok && id.Name == "_" {
-						return gas.NewIssue(c, n, r.What, r.Severity, r.Confidence), nil
+					if id, ok := stmt.Lhs[pos].(*ast.Ident); ok && id.Name == "_" {
+						return gosec.NewIssue(ctx, n, r.ID(), r.What, r.Severity, r.Confidence), nil
 					}
 				}
+			}
+		}
+	case *ast.ExprStmt:
+		if callExpr, ok := stmt.X.(*ast.CallExpr); ok && r.whitelist.ContainsCallExpr(stmt.X, ctx) == nil {
+			pos := returnsError(callExpr, ctx)
+			if pos >= 0 {
+				return gosec.NewIssue(ctx, n, r.ID(), r.What, r.Severity, r.Confidence), nil
 			}
 		}
 	}
 	return nil, nil
 }
 
-func NewNoErrorCheck(conf map[string]interface{}) (r gas.Rule, n ast.Node) {
-	r = &NoErrorCheck{
-		MetaData: gas.MetaData{
-			Severity:   gas.Low,
-			Confidence: gas.High,
+// NewNoErrorCheck detects if the returned error is unchecked
+func NewNoErrorCheck(id string, conf gosec.Config) (gosec.Rule, []ast.Node) {
+	// TODO(gm) Come up with sensible defaults here. Or flip it to use a
+	// black list instead.
+	whitelist := gosec.NewCallList()
+	whitelist.AddAll("bytes.Buffer", "Write", "WriteByte", "WriteRune", "WriteString")
+	whitelist.AddAll("fmt", "Print", "Printf", "Println", "Fprint", "Fprintf", "Fprintln")
+	whitelist.AddAll("strings.Builder", "Write", "WriteByte", "WriteRune", "WriteString")
+	whitelist.Add("io.PipeWriter", "CloseWithError")
+
+	if configured, ok := conf["G104"]; ok {
+		if whitelisted, ok := configured.(map[string]interface{}); ok {
+			for pkg, funcs := range whitelisted {
+				if funcs, ok := funcs.([]interface{}); ok {
+					whitelist.AddAll(pkg, toStringSlice(funcs)...)
+				}
+			}
+		}
+	}
+
+	return &noErrorCheck{
+		MetaData: gosec.MetaData{
+			ID:         id,
+			Severity:   gosec.Low,
+			Confidence: gosec.High,
 			What:       "Errors unhandled.",
 		},
+		whitelist: whitelist,
+	}, []ast.Node{(*ast.AssignStmt)(nil), (*ast.ExprStmt)(nil)}
+}
+
+func toStringSlice(values []interface{}) []string {
+	result := []string{}
+	for _, value := range values {
+		if value, ok := value.(string); ok {
+			result = append(result, value)
+		}
 	}
-	n = (*ast.AssignStmt)(nil)
-	return
+	return result
 }

@@ -17,37 +17,42 @@ package rules
 import (
 	"fmt"
 	"go/ast"
-	"regexp"
 
-	gas "github.com/HewlettPackard/gas/core"
+	"github.com/securego/gosec/v2"
 )
 
-type WeakKeyStrength struct {
-	gas.MetaData
-	pattern *regexp.Regexp
-	bits    int
+type weakKeyStrength struct {
+	gosec.MetaData
+	calls gosec.CallList
+	bits  int
 }
 
-func (w *WeakKeyStrength) Match(n ast.Node, c *gas.Context) (*gas.Issue, error) {
-	if node := gas.MatchCall(n, w.pattern); node != nil {
-		if bits, err := gas.GetInt(node.Args[1]); err == nil && bits < (int64)(w.bits) {
-			return gas.NewIssue(c, n, w.What, w.Severity, w.Confidence), nil
+func (w *weakKeyStrength) ID() string {
+	return w.MetaData.ID
+}
+
+func (w *weakKeyStrength) Match(n ast.Node, c *gosec.Context) (*gosec.Issue, error) {
+	if callExpr := w.calls.ContainsPkgCallExpr(n, c, false); callExpr != nil {
+		if bits, err := gosec.GetInt(callExpr.Args[1]); err == nil && bits < (int64)(w.bits) {
+			return gosec.NewIssue(c, n, w.ID(), w.What, w.Severity, w.Confidence), nil
 		}
 	}
 	return nil, nil
 }
 
-func NewWeakKeyStrength(conf map[string]interface{}) (r gas.Rule, n ast.Node) {
+// NewWeakKeyStrength builds a rule that detects RSA keys < 2048 bits
+func NewWeakKeyStrength(id string, conf gosec.Config) (gosec.Rule, []ast.Node) {
+	calls := gosec.NewCallList()
+	calls.Add("crypto/rsa", "GenerateKey")
 	bits := 2048
-	r = &WeakKeyStrength{
-		pattern: regexp.MustCompile(`^rsa\.GenerateKey$`),
-		bits:    bits,
-		MetaData: gas.MetaData{
-			Severity:   gas.Medium,
-			Confidence: gas.High,
+	return &weakKeyStrength{
+		calls: calls,
+		bits:  bits,
+		MetaData: gosec.MetaData{
+			ID:         id,
+			Severity:   gosec.Medium,
+			Confidence: gosec.High,
 			What:       fmt.Sprintf("RSA keys should be at least %d bits", bits),
 		},
-	}
-	n = (*ast.CallExpr)(nil)
-	return
+	}, []ast.Node{(*ast.CallExpr)(nil)}
 }

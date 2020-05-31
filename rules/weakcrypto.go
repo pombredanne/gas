@@ -16,33 +16,43 @@ package rules
 
 import (
 	"go/ast"
-	"regexp"
 
-	gas "github.com/HewlettPackard/gas/core"
+	"github.com/securego/gosec/v2"
 )
 
-type UsesWeakCryptography struct {
-	gas.MetaData
-	pattern *regexp.Regexp
+type usesWeakCryptography struct {
+	gosec.MetaData
+	blacklist map[string][]string
 }
 
-func (r *UsesWeakCryptography) Match(n ast.Node, c *gas.Context) (*gas.Issue, error) {
-	if node := gas.MatchCall(n, r.pattern); node != nil {
-		return gas.NewIssue(c, n, r.What, r.Severity, r.Confidence), nil
+func (r *usesWeakCryptography) ID() string {
+	return r.MetaData.ID
+}
+
+func (r *usesWeakCryptography) Match(n ast.Node, c *gosec.Context) (*gosec.Issue, error) {
+	for pkg, funcs := range r.blacklist {
+		if _, matched := gosec.MatchCallByPackage(n, c, pkg, funcs...); matched {
+			return gosec.NewIssue(c, n, r.ID(), r.What, r.Severity, r.Confidence), nil
+		}
 	}
 	return nil, nil
 }
 
-// Uses des.* md5.* or rc4.*
-func NewUsesWeakCryptography(conf map[string]interface{}) (r gas.Rule, n ast.Node) {
-	r = &UsesWeakCryptography{
-		pattern: regexp.MustCompile(`des\.NewCipher|des\.NewTripleDESCipher|md5\.New|md5\.Sum|rc4\.NewCipher`),
-		MetaData: gas.MetaData{
-			Severity:   gas.Medium,
-			Confidence: gas.High,
+// NewUsesWeakCryptography detects uses of des.* md5.* or rc4.*
+func NewUsesWeakCryptography(id string, conf gosec.Config) (gosec.Rule, []ast.Node) {
+	calls := make(map[string][]string)
+	calls["crypto/des"] = []string{"NewCipher", "NewTripleDESCipher"}
+	calls["crypto/md5"] = []string{"New", "Sum"}
+	calls["crypto/sha1"] = []string{"New", "Sum"}
+	calls["crypto/rc4"] = []string{"NewCipher"}
+	rule := &usesWeakCryptography{
+		blacklist: calls,
+		MetaData: gosec.MetaData{
+			ID:         id,
+			Severity:   gosec.Medium,
+			Confidence: gosec.High,
 			What:       "Use of weak cryptographic primitive",
 		},
 	}
-	n = (*ast.CallExpr)(nil)
-	return
+	return rule, []ast.Node{(*ast.CallExpr)(nil)}
 }

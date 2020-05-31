@@ -16,36 +16,46 @@ package rules
 
 import (
 	"go/ast"
-	"regexp"
 
-	gas "github.com/HewlettPackard/gas/core"
+	"github.com/securego/gosec/v2"
 )
 
-type TemplateCheck struct {
-	gas.MetaData
-	call *regexp.Regexp
+type templateCheck struct {
+	gosec.MetaData
+	calls gosec.CallList
 }
 
-func (t *TemplateCheck) Match(n ast.Node, c *gas.Context) (gi *gas.Issue, err error) {
-	if node := gas.MatchCall(n, t.call); node != nil {
+func (t *templateCheck) ID() string {
+	return t.MetaData.ID
+}
+
+func (t *templateCheck) Match(n ast.Node, c *gosec.Context) (*gosec.Issue, error) {
+	if node := t.calls.ContainsPkgCallExpr(n, c, false); node != nil {
 		for _, arg := range node.Args {
 			if _, ok := arg.(*ast.BasicLit); !ok { // basic lits are safe
-				return gas.NewIssue(c, n, t.What, t.Severity, t.Confidence), nil
+				return gosec.NewIssue(c, n, t.ID(), t.What, t.Severity, t.Confidence), nil
 			}
 		}
 	}
 	return nil, nil
 }
 
-func NewTemplateCheck(conf map[string]interface{}) (r gas.Rule, n ast.Node) {
-	r = &TemplateCheck{
-		call: regexp.MustCompile(`^template\.(HTML|JS|URL)$`),
-		MetaData: gas.MetaData{
-			Severity:   gas.Medium,
-			Confidence: gas.Low,
+// NewTemplateCheck constructs the template check rule. This rule is used to
+// find use of templates where HTML/JS escaping is not being used
+func NewTemplateCheck(id string, conf gosec.Config) (gosec.Rule, []ast.Node) {
+
+	calls := gosec.NewCallList()
+	calls.Add("html/template", "HTML")
+	calls.Add("html/template", "HTMLAttr")
+	calls.Add("html/template", "JS")
+	calls.Add("html/template", "URL")
+	return &templateCheck{
+		calls: calls,
+		MetaData: gosec.MetaData{
+			ID:         id,
+			Severity:   gosec.Medium,
+			Confidence: gosec.Low,
 			What:       "this method will not auto-escape HTML. Verify data is well formed.",
 		},
-	}
-	n = (*ast.CallExpr)(nil)
-	return
+	}, []ast.Node{(*ast.CallExpr)(nil)}
 }
